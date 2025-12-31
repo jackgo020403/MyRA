@@ -1,0 +1,63 @@
+name: Build Research Assistant
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Build Windows executable
+        run: pyinstaller build_app_lite.spec --noconfirm
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: ResearchAssistant-Windows
+          path: dist/ResearchAssistant.exe
+
+  build-mac:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Build Mac executable
+        run: pyinstaller build_app_lite.spec --noconfirm
+
+      - name: Create DMG (optional)
+        run: |
+          mkdir -p dist/dmg
+          cp -r dist/ResearchAssistant.app dist/dmg/
+          hdiutil create -volname "Research Assistant" -srcfolder dist/dmg -ov -format UDZO dist/ResearchAssistant.dmg
+
+      - name: Upload Mac artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: ResearchAssistant-macOS
+          path: |
+            dist/ResearchAssistant.app
+            dist/ResearchAssistant.dmg

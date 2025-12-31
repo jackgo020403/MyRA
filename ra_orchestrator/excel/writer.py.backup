@@ -1,0 +1,166 @@
+"""Excel writer for research output."""
+from datetime import datetime
+from pathlib import Path
+from openpyxl import Workbook
+from openpyxl.styles import Font, Alignment
+
+from ra_orchestrator.state import RAState, ResearchPlan, LedgerSchema, MemoBlock, LedgerRow
+from ra_orchestrator.excel.styles import (
+    apply_title_style,
+    apply_memo_style,
+    apply_conclusion_style,
+    apply_decomposition_style,
+    apply_header_row_style,
+    apply_ledger_row_style,
+    set_column_widths,
+)
+
+
+def write_dry_run_excel(state: RAState, output_dir: Path) -> str:
+    """
+    Write a dry-run Excel file with Title, Memo placeholder, Decomposition, and empty ledger.
+
+    Args:
+        state: RA state with research_plan and ledger_schema
+        output_dir: Directory to save Excel file
+
+    Returns:
+        Path to saved Excel file
+    """
+    plan: ResearchPlan = state["research_plan"]
+    schema: LedgerSchema = state["ledger_schema"]
+
+    # Create workbook
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Research Output"
+
+    current_row = 1
+
+    # ========== TITLE ==========
+    num_cols = len(schema.meta_columns) + len(schema.dynamic_columns)
+    ws.cell(current_row, 1, plan.research_title)
+    apply_title_style(ws, current_row, 1, num_cols)
+    ws.row_dimensions[current_row].height = 40
+    current_row += 1
+
+    # Blank row
+    current_row += 1
+
+    # ========== MEMO BLOCK (PLACEHOLDER) ==========
+    memo_start_row = current_row
+
+    ws.cell(current_row, 1, "EXECUTIVE MEMO")
+    ws.cell(current_row, 1).font = Font(name="Calibri", size=12, bold=True)
+    current_row += 1
+
+    ws.cell(current_row, 1, "Key Conclusion:")
+    ws.cell(current_row, 1).font = Font(name="Calibri", size=11, bold=True)
+    current_row += 1
+
+    ws.cell(current_row, 1, "[PLACEHOLDER - Will be auto-generated after research]")
+    apply_conclusion_style(ws.cell(current_row, 1))
+    ws.merge_cells(start_row=current_row, start_column=1, end_row=current_row, end_column=num_cols)
+    current_row += 1
+
+    current_row += 1
+    ws.cell(current_row, 1, "Key Supporting Evidence:")
+    ws.cell(current_row, 1).font = Font(name="Calibri", size=11, bold=True)
+    current_row += 1
+
+    for i in range(1, 4):
+        ws.cell(current_row, 1, f"  {i}. [Evidence summary] (Source: [Publisher, Year], Row ID: [#])")
+        ws.merge_cells(start_row=current_row, start_column=1, end_row=current_row, end_column=num_cols)
+        current_row += 1
+
+    current_row += 1
+    ws.cell(current_row, 1, "Caveat/Confidence:")
+    ws.cell(current_row, 1).font = Font(name="Calibri", size=11, bold=True)
+    current_row += 1
+
+    ws.cell(current_row, 1, "[Optional - if needed]")
+    ws.merge_cells(start_row=current_row, start_column=1, end_row=current_row, end_column=num_cols)
+    current_row += 1
+
+    memo_end_row = current_row - 1
+    apply_memo_style(ws, memo_start_row, memo_end_row, 1, num_cols)
+
+    # Blank row
+    current_row += 1
+
+    # ========== QUESTION DECOMPOSITION ==========
+    ws.cell(current_row, 1, "QUESTION DECOMPOSITION")
+    ws.cell(current_row, 1).font = Font(name="Calibri", size=12, bold=True)
+    current_row += 1
+
+    for sub_q in plan.sub_questions:
+        decomp_start = current_row
+
+        ws.cell(current_row, 1, f"{sub_q.q_id}: {sub_q.question}")
+        ws.merge_cells(start_row=current_row, start_column=1, end_row=current_row, end_column=num_cols)
+        current_row += 1
+
+        ws.cell(current_row, 1, f"  Rationale: {sub_q.rationale}")
+        ws.merge_cells(start_row=current_row, start_column=1, end_row=current_row, end_column=num_cols)
+        current_row += 1
+
+        decomp_end = current_row - 1
+        apply_decomposition_style(ws, decomp_start, decomp_end, 1, num_cols, sub_q.q_id)
+
+        # Small gap between questions
+        current_row += 1
+
+    # Blank row
+    current_row += 1
+
+    # ========== LEDGER ==========
+    ws.cell(current_row, 1, "RESEARCH LEDGER")
+    ws.cell(current_row, 1).font = Font(name="Calibri", size=12, bold=True)
+    current_row += 1
+
+    # Header row
+    ledger_header_row = current_row
+    all_columns = schema.meta_columns + [col.name for col in schema.dynamic_columns]
+
+    for col_idx, col_name in enumerate(all_columns, start=1):
+        ws.cell(current_row, col_idx, col_name)
+
+    apply_header_row_style(ws, current_row, 1, len(all_columns))
+    current_row += 1
+
+    # Placeholder rows
+    ws.cell(current_row, 1, "[Ledger rows will be populated during research phase]")
+    ws.merge_cells(start_row=current_row, start_column=1, end_row=current_row, end_column=num_cols)
+    current_row += 1
+
+    # ========== FREEZE PANES ==========
+    # Freeze at the ledger header row so Title + Memo + Decomposition stay visible
+    ws.freeze_panes = ws.cell(ledger_header_row + 1, 1)
+
+    # ========== COLUMN WIDTHS ==========
+    set_column_widths(ws, num_cols)
+
+    # ========== SAVE ==========
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"research_output_dryrun_{timestamp}.xlsx"
+    filepath = output_dir / filename
+
+    wb.save(filepath)
+
+    return str(filepath)
+
+
+def write_full_excel(state: RAState, output_dir: Path) -> str:
+    """
+    Write the full Excel file with actual research data.
+    (To be implemented in Milestone 2/3)
+
+    Args:
+        state: Complete RA state with ledger_rows and memo_block
+        output_dir: Directory to save Excel file
+
+    Returns:
+        Path to saved Excel file
+    """
+    # Placeholder for Milestone 2/3
+    raise NotImplementedError("Full Excel writing will be implemented in Milestone 2/3")

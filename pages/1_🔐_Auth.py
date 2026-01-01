@@ -14,7 +14,17 @@ LAMBDA_FUNCTION_NAME = "myra-auth"
 def get_org_api_keys(org_code: str) -> dict:
     """Fetch API keys for a given organization from DynamoDB."""
     try:
-        dynamodb = boto3.client('dynamodb', region_name=AWS_REGION)
+        # Use Streamlit secrets for AWS credentials if available (for Cloud deployment)
+        if hasattr(st, 'secrets') and 'aws' in st.secrets:
+            dynamodb = boto3.client(
+                'dynamodb',
+                region_name=st.secrets.aws.get('region_name', AWS_REGION),
+                aws_access_key_id=st.secrets.aws.get('aws_access_key_id'),
+                aws_secret_access_key=st.secrets.aws.get('aws_secret_access_key')
+            )
+        else:
+            # Use default AWS credentials (for local development)
+            dynamodb = boto3.client('dynamodb', region_name=AWS_REGION)
 
         response = dynamodb.get_item(
             TableName='myra-organizations-prod',
@@ -45,8 +55,17 @@ def call_lambda(action: str, data: dict) -> dict:
     }
 
     try:
-        # Create Lambda client
-        lambda_client = boto3.client('lambda', region_name=AWS_REGION)
+        # Create Lambda client with Streamlit secrets if available
+        if hasattr(st, 'secrets') and 'aws' in st.secrets:
+            lambda_client = boto3.client(
+                'lambda',
+                region_name=st.secrets.aws.get('region_name', AWS_REGION),
+                aws_access_key_id=st.secrets.aws.get('aws_access_key_id'),
+                aws_secret_access_key=st.secrets.aws.get('aws_secret_access_key')
+            )
+        else:
+            # Use default AWS credentials (for local development)
+            lambda_client = boto3.client('lambda', region_name=AWS_REGION)
 
         # Invoke Lambda
         response = lambda_client.invoke(

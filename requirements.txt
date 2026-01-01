@@ -11,11 +11,11 @@ pandas==2.2.2
 openpyxl==3.1.2
 beautifulsoup4==4.12.3
 
-# LangChain - pinned versions to avoid heavy dependencies
+# LangChain - compatible versions
 langchain==0.3.14
 langchain-anthropic==0.3.8
 langchain-community==0.3.13
-langchain-core==0.3.28
+langchain-core==0.3.29
 langchain-text-splitters==0.3.4
 
 # Utilities

@@ -1,0 +1,51 @@
+version: '3.8'
+
+services:
+  # DynamoDB Local for development
+  dynamodb-local:
+    image: amazon/dynamodb-local:latest
+    container_name: myra-dynamodb-local
+    ports:
+      - "8000:8000"
+    command: "-jar DynamoDBLocal.jar -sharedDb -inMemory"
+    networks:
+      - myra-network
+
+  # Lambda function (for local testing)
+  lambda:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: myra-lambda
+    ports:
+      - "9000:8080"
+    environment:
+      - AWS_ACCESS_KEY_ID=test
+      - AWS_SECRET_ACCESS_KEY=test
+      - AWS_DEFAULT_REGION=us-east-1
+      - DYNAMODB_ENDPOINT=http://dynamodb-local:8000
+      - DYNAMODB_TABLE_USERS=myra-users-dev
+      - DYNAMODB_TABLE_USAGE=myra-usage-dev
+      - DYNAMODB_TABLE_VERIFICATION=myra-verification-dev
+      - DYNAMODB_TABLE_ORGS=myra-organizations-dev
+      - JWT_SECRET=local-dev-secret-key-change-in-production
+      # Organization API keys (for testing)
+      - ANTHROPIC_KEY_SNU=your-anthropic-key-for-snu
+      - SERPER_KEY_SNU=your-serper-key-for-snu
+      - ANTHROPIC_KEY_MCKINSEY=your-anthropic-key-for-mckinsey
+      - SERPER_KEY_MCKINSEY=your-serper-key-for-mckinsey
+      - ANTHROPIC_KEY_BCG=your-anthropic-key-for-bcg
+      - SERPER_KEY_BCG=your-serper-key-for-bcg
+      - ANTHROPIC_KEY_BAIN=your-anthropic-key-for-bain
+      - SERPER_KEY_BAIN=your-serper-key-for-bain
+    networks:
+      - myra-network
+    depends_on:
+      - dynamodb-local
+
+networks:
+  myra-network:
+    driver: bridge
+
+volumes:
+  dynamodb-data:

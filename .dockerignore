@@ -1,0 +1,31 @@
+# Ignore unnecessary files in Docker build
+.git
+.gitignore
+*.md
+*.pyc
+__pycache__
+.env
+.venv
+venv/
+outputs/
+*.xlsx
+*.pptx
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.log
+
+# Don't include these in Lambda image
+gui_app.py
+gui_app_simple.py
+web_app.py
+streamlit_app.py
+build.bat
+*.spec
+dist/
+build/
+
+# Keep only Lambda-specific files
+!lambda/
+!lambda_requirements.txt

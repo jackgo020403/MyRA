@@ -20,11 +20,32 @@ from ra_orchestrator.excel.writer_m3 import write_milestone3_excel
 
 # Page config
 st.set_page_config(
-    page_title="Research Assistant",
+    page_title="MyRA - Research Assistant",
     page_icon="🔍",
     layout="wide",
     initial_sidebar_state="expanded"
 )
+
+# Check authentication
+if not st.session_state.get("authenticated"):
+    st.warning("⚠️ Please log in to use the Research Assistant")
+    st.info("Click the link below to go to the authentication page")
+    if st.button("🔐 Go to Login Page", type="primary"):
+        st.switch_page("pages/1_🔐_Auth.py")
+    st.stop()
+
+# Get API keys from session (set during login)
+anthropic_key = st.session_state.get("anthropic_api_key", "")
+serper_key = st.session_state.get("serper_api_key", "")
+
+# If API keys not in session, this means user logged in before this feature was added
+if not anthropic_key or not serper_key:
+    st.error("⚠️ API keys not configured. Please log out and log in again.")
+    if st.button("🚪 Logout and Re-login"):
+        for key in list(st.session_state.keys()):
+            del st.session_state[key]
+        st.switch_page("pages/1_🔐_Auth.py")
+    st.stop()
 
 # Custom CSS
 st.markdown("""
@@ -81,54 +102,46 @@ Be specific but concise. Format as bullet points."""
 
 
 def main():
-    # Header
-    st.title("🔍 Research Assistant")
-    st.markdown("*AI-Powered Research & Analysis*")
-    st.markdown("---")
-
-    # Sidebar for API keys
+    # Sidebar
     with st.sidebar:
-        st.header("⚙️ Configuration")
-
-        anthropic_key = st.text_input(
-            "Anthropic API Key",
-            type="password",
-            help="Get your key from https://console.anthropic.com/"
-        )
-
-        serper_key = st.text_input(
-            "Serper API Key",
-            type="password",
-            help="Get your key from https://serper.dev/"
-        )
+        st.header("📚 Past Research Logs")
+        st.info("Coming soon - Your research history will appear here")
 
         st.markdown("---")
-        st.markdown("### 💡 Tips")
-        st.markdown("""
-        - Be specific in your research question
-        - Include timeframes if relevant
-        - Specify geographic scope
-        - Research takes 5-10 minutes
-        """)
 
-    # Main content
-    if not anthropic_key or not serper_key:
-        st.warning("⚠️ Please enter your API keys in the sidebar to get started.")
-        st.info("""
-        ### How to get API keys:
+        # User info
+        st.markdown("### 👤 Account")
+        st.markdown(f"**{st.session_state.get('user_name', 'User')}**")
+        st.markdown(f"📧 {st.session_state.get('user_email', '')}")
+        st.markdown(f"🏢 {st.session_state.get('organization_name', st.session_state.get('user_organization', ''))}")
+        st.markdown(f"📊 Daily Limit: {st.session_state.get('daily_limit', 'N/A')} queries")
 
-        **Anthropic (Claude):**
-        1. Go to https://console.anthropic.com/
-        2. Sign up / Log in
-        3. Go to API Keys
-        4. Create a new key
+        if st.button("🚪 Logout", use_container_width=True):
+            for key in list(st.session_state.keys()):
+                del st.session_state[key]
+            st.switch_page("pages/1_🔐_Auth.py")
 
-        **Serper (Web Search):**
-        1. Go to https://serper.dev/
-        2. Sign up with Google
-        3. Copy your API key from dashboard
-        """)
-        return
+    # Header with welcome message
+    st.title("🔍 MyRA Research Assistant")
+    st.markdown(f"*Welcome, {st.session_state.get('user_name', 'User')}!*")
+
+    # App description
+    st.markdown("""
+    ### What is MyRA?
+
+    **MyRA** is an AI-powered research assistant that helps you conduct comprehensive market research and analysis.
+    Simply ask a question, and MyRA will:
+
+    - 🎯 **Plan** a structured research approach with targeted sub-questions
+    - 🔍 **Search** 50+ web sources for relevant evidence
+    - 📊 **Analyze** and synthesize findings into actionable insights
+    - 📝 **Generate** an executive memo with key takeaways
+    - 📥 **Deliver** a complete Excel report with raw data and citations
+
+    **Your organization's API keys are automatically configured** - just enter your question and start researching!
+    """)
+
+    st.markdown("---")
 
     # Initialize session state
     if 'stage' not in st.session_state:

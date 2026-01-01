@@ -3,28 +3,66 @@ Authentication page for MyRA Research Assistant.
 Handles signup, login, and email verification.
 """
 import streamlit as st
-import requests
+import boto3
 import json
 
-# Lambda endpoint (local or AWS)
-LAMBDA_ENDPOINT = st.secrets.get("lambda_endpoint", "http://localhost:9000/2015-03-31/functions/function/invocations")
+# AWS Lambda configuration
+AWS_REGION = "ap-northeast-2"
+LAMBDA_FUNCTION_NAME = "myra-auth"
+
+
+def get_org_api_keys(org_code: str) -> dict:
+    """Fetch API keys for a given organization from DynamoDB."""
+    try:
+        dynamodb = boto3.client('dynamodb', region_name=AWS_REGION)
+
+        response = dynamodb.get_item(
+            TableName='myra-organizations-prod',
+            Key={'org_code': {'S': org_code}}
+        )
+
+        if 'Item' not in response:
+            return {"error": f"Organization {org_code} not found"}
+
+        item = response['Item']
+
+        return {
+            "anthropic_api_key": item['anthropic_api_key']['S'],
+            "serper_api_key": item['serper_api_key']['S'],
+            "organization_name": item['name']['S'],
+            "daily_limit": int(item['daily_limit']['N'])
+        }
+
+    except Exception as e:
+        return {"error": str(e)}
 
 
 def call_lambda(action: str, data: dict) -> dict:
-    """Call Lambda function."""
-    event = {
-        "body": json.dumps({
-            "action": action,
-            **data
-        })
+    """Call Lambda function using AWS SDK."""
+    payload = {
+        "action": action,
+        **data
     }
 
     try:
-        response = requests.post(LAMBDA_ENDPOINT, json=event, timeout=30)
-        result = response.json()
+        # Create Lambda client
+        lambda_client = boto3.client('lambda', region_name=AWS_REGION)
 
-        if 'body' in result:
+        # Invoke Lambda
+        response = lambda_client.invoke(
+            FunctionName=LAMBDA_FUNCTION_NAME,
+            InvocationType='RequestResponse',
+            Payload=json.dumps(payload)
+        )
+
+        # Parse response
+        result = json.loads(response['Payload'].read())
+
+        # Lambda returns {statusCode, body}
+        if 'body' in result and isinstance(result['body'], str):
             return json.loads(result['body'])
+        elif 'body' in result:
+            return result['body']
         return result
     except Exception as e:
         return {"error": str(e)}
@@ -90,28 +128,29 @@ def show_signup():
                 st.error(f"❌ {result['error']}")
             else:
                 st.success(f"✅ {result['message']}")
-                st.info("📧 Please check your email for the verification code.")
 
                 # Store email in session for verification
                 st.session_state.pending_verification_email = email
-                st.session_state.auth_tab = "verify"
                 st.rerun()
 
 
 def show_verification():
     """Show email verification form."""
-    st.subheader("📧 Verify Email")
+    st.subheader("📧 Verify Your Email")
 
     email = st.session_state.get("pending_verification_email", "")
 
     if not email:
         st.warning("Please sign up first to get a verification code.")
-        if st.button("Go to Sign Up"):
-            st.session_state.auth_tab = "signup"
+        if st.button("← Back to Login"):
+            if "pending_verification_email" in st.session_state:
+                del st.session_state.pending_verification_email
             st.rerun()
         return
 
-    st.info(f"Verification code sent to: **{email}**")
+    st.success(f"✅ Account created successfully!")
+    st.info(f"📧 A 6-digit verification code has been sent to: **{email}**")
+    st.info("💡 Please check your email inbox (and spam folder) for the verification code.")
 
     with st.form("verification_form"):
         code = st.text_input("Verification Code (6 digits)", max_chars=6)
@@ -140,6 +179,14 @@ def show_verification():
                 st.session_state.user_organization = result["organization"]
                 st.session_state.user_token = result["token"]
                 st.session_state.daily_limit = result["daily_limit"]
+                st.session_state.user_name = result.get("name", "User")
+
+                # Fetch and store organization API keys
+                api_keys = get_org_api_keys(result["organization"])
+                if "error" not in api_keys:
+                    st.session_state.anthropic_api_key = api_keys["anthropic_api_key"]
+                    st.session_state.serper_api_key = api_keys["serper_api_key"]
+                    st.session_state.organization_name = api_keys["organization_name"]
 
                 # Clear pending verification
                 if "pending_verification_email" in st.session_state:
@@ -162,8 +209,9 @@ def show_verification():
                 st.success("New verification code sent!")
 
     with col2:
-        if st.button("← Back to Sign Up"):
-            st.session_state.auth_tab = "signup"
+        if st.button("← Back to Login"):
+            if "pending_verification_email" in st.session_state:
+                del st.session_state.pending_verification_email
             st.rerun()
 
 
@@ -190,11 +238,10 @@ def show_login():
             if "error" in result:
                 # Check if verification needed
                 if result.get("requires_verification"):
-                    st.warning(result["error"])
+                    st.error(f"❌ {result['error']}")
+                    st.info("Please verify your email first.")
                     st.session_state.pending_verification_email = email
-                    if st.button("Go to Verification"):
-                        st.session_state.auth_tab = "verify"
-                        st.rerun()
+                    st.rerun()
                 else:
                     st.error(f"❌ {result['error']}")
             else:
@@ -208,6 +255,13 @@ def show_login():
                 st.session_state.user_token = result["token"]
                 st.session_state.daily_limit = result["daily_limit"]
                 st.session_state.user_name = result.get("name", "")
+
+                # Fetch and store organization API keys
+                api_keys = get_org_api_keys(result["organization"])
+                if "error" not in api_keys:
+                    st.session_state.anthropic_api_key = api_keys["anthropic_api_key"]
+                    st.session_state.serper_api_key = api_keys["serper_api_key"]
+                    st.session_state.organization_name = api_keys["organization_name"]
 
                 st.balloons()
                 st.info("Redirecting to Research Assistant...")
@@ -243,20 +297,19 @@ if st.session_state.get("authenticated"):
                 del st.session_state[key]
             st.rerun()
 else:
-    # Tab selector
-    if "auth_tab" not in st.session_state:
-        st.session_state.auth_tab = "login"
-
-    tabs = st.tabs(["🔐 Login", "📝 Sign Up", "📧 Verify Email"])
-
-    with tabs[0]:
-        show_login()
-
-    with tabs[1]:
-        show_signup()
-
-    with tabs[2]:
+    # Check if user needs to verify email
+    if st.session_state.get("pending_verification_email"):
+        # Show verification page directly
         show_verification()
+    else:
+        # Show login/signup tabs
+        tabs = st.tabs(["🔐 Login", "📝 Sign Up"])
+
+        with tabs[0]:
+            show_login()
+
+        with tabs[1]:
+            show_signup()
 
 # Footer
 st.markdown("---")

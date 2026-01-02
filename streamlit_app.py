@@ -4,9 +4,12 @@ Works on ANY platform - Mac, Windows, Linux, iOS, Android.
 """
 import streamlit as st
 import os
+import json
+import base64
 from pathlib import Path
 from datetime import datetime
 from anthropic import Anthropic
+import boto3
 
 from ra_orchestrator.state import RAState
 from ra_orchestrator.agents.planner import run_planner
@@ -104,8 +107,106 @@ Be specific but concise. Format as bullet points."""
 def main():
     # Sidebar
     with st.sidebar:
+        # What is MyRA? section
+        with st.expander("ℹ️ What is MyRA?", expanded=False):
+            st.markdown("""
+            **MyRA** is an AI-powered research assistant that helps you conduct comprehensive market research and analysis.
+
+            Simply ask a question, and MyRA will:
+
+            - 🎯 **Plan** a structured research approach with targeted sub-questions
+            - 🔍 **Search** 50+ web sources for relevant evidence
+            - 📊 **Analyze** and synthesize findings into actionable insights
+            - 📝 **Generate** an executive memo with key takeaways
+            - 📥 **Deliver** a complete Excel report with raw data and citations
+
+            **Your organization's API keys are automatically configured** - just enter your question and start researching!
+            """)
+
+        st.markdown("---")
+
         st.header("📚 Past Research Logs")
-        st.info("Coming soon - Your research history will appear here")
+
+        # Fetch research logs
+        user_id = st.session_state.get('user_id', '')
+        if user_id:
+            try:
+                # Use Streamlit secrets for AWS credentials if available (for Cloud deployment)
+                if hasattr(st, 'secrets') and 'aws' in st.secrets:
+                    lambda_client = boto3.client(
+                        'lambda',
+                        region_name=st.secrets.aws.get('region_name', 'ap-northeast-2'),
+                        aws_access_key_id=st.secrets.aws.get('aws_access_key_id'),
+                        aws_secret_access_key=st.secrets.aws.get('aws_secret_access_key')
+                    )
+                else:
+                    # Use default AWS credentials (for local development)
+                    lambda_client = boto3.client('lambda', region_name='ap-northeast-2')
+
+                # Call Lambda to get research logs
+                response = lambda_client.invoke(
+                    FunctionName='myra-auth',
+                    InvocationType='RequestResponse',
+                    Payload=json.dumps({
+                        'action': 'get_research_logs',
+                        'user_id': user_id,
+                        'limit': 10
+                    })
+                )
+
+                result = json.loads(response['Payload'].read())
+                if result['statusCode'] == 200:
+                    body = json.loads(result['body'])
+                    logs = body.get('logs', [])
+
+                    if logs:
+                        for log in logs:
+                            with st.expander(f"📄 {log['research_title'][:40]}...", expanded=False):
+                                st.caption(f"Created: {log['created_at'][:10]}")
+                                st.caption(f"Question: {log['research_question'][:80]}...")
+
+                                col1, col2 = st.columns(2)
+                                with col1:
+                                    # Download button
+                                    if st.button("📥 Download", key=f"dl_{log['log_id']}", use_container_width=True):
+                                        # Get presigned URL
+                                        dl_response = lambda_client.invoke(
+                                            FunctionName='myra-auth',
+                                            InvocationType='RequestResponse',
+                                            Payload=json.dumps({
+                                                'action': 'get_research_log_file',
+                                                'user_id': user_id,
+                                                'log_id': log['log_id']
+                                            })
+                                        )
+                                        dl_result = json.loads(dl_response['Payload'].read())
+                                        if dl_result['statusCode'] == 200:
+                                            dl_body = json.loads(dl_result['body'])
+                                            st.markdown(f"[Download {log['file_name']}]({dl_body['download_url']})")
+
+                                with col2:
+                                    # Delete button
+                                    if st.button("🗑️ Delete", key=f"del_{log['log_id']}", use_container_width=True):
+                                        # Call delete
+                                        del_response = lambda_client.invoke(
+                                            FunctionName='myra-auth',
+                                            InvocationType='RequestResponse',
+                                            Payload=json.dumps({
+                                                'action': 'delete_research_log',
+                                                'user_id': user_id,
+                                                'log_id': log['log_id']
+                                            })
+                                        )
+                                        st.success("Deleted! Refresh to update list.")
+                                        st.rerun()
+                    else:
+                        st.info("No research logs yet. Complete a research to see it here!")
+                else:
+                    st.warning("Could not load research logs")
+            except Exception as e:
+                st.error(f"Error loading logs: {str(e)}")
+        else:
+            st.info("No research logs yet")
 
         st.markdown("---")
 
@@ -124,23 +225,6 @@ def main():
     # Header with welcome message
     st.title("🔍 MyRA Research Assistant")
     st.markdown(f"*Welcome, {st.session_state.get('user_name', 'User')}!*")
-
-    # App description
-    st.markdown("""
-    ### What is MyRA?
-
-    **MyRA** is an AI-powered research assistant that helps you conduct comprehensive market research and analysis.
-    Simply ask a question, and MyRA will:
-
-    - 🎯 **Plan** a structured research approach with targeted sub-questions
-    - 🔍 **Search** 50+ web sources for relevant evidence
-    - 📊 **Analyze** and synthesize findings into actionable insights
-    - 📝 **Generate** an executive memo with key takeaways
-    - 📥 **Deliver** a complete Excel report with raw data and citations
-
-    **Your organization's API keys are automatically configured** - just enter your question and start researching!
-    """)
-
     st.markdown("---")
 
     # Initialize session state
@@ -184,7 +268,9 @@ def main():
         st.info(st.session_state.question)
 
         st.markdown("**Detected Research Scope:**")
-        st.markdown(f"<div class='step-box'>{st.session_state.scope}</div>", unsafe_allow_html=True)
+        # Use a container with proper styling instead of raw HTML
+        with st.container():
+            st.markdown(st.session_state.scope)
 
         col1, col2 = st.columns(2)
 
@@ -202,8 +288,14 @@ def main():
     elif st.session_state.stage == 'scope_feedback':
         st.header("2️⃣ Refine Research Scope")
 
+        st.markdown("**Your Question:**")
+        st.info(st.session_state.question)
+
         st.markdown("**Current Scope:**")
-        st.info(st.session_state.scope)
+        with st.container():
+            st.markdown(st.session_state.scope)
+
+        st.markdown("---")
 
         feedback = st.text_area(
             "What would you like to change?",
@@ -276,6 +368,21 @@ def main():
     # Stage 4b: Plan Feedback
     elif st.session_state.stage == 'plan_feedback':
         st.header("4️⃣ Revise Research Plan")
+
+        # Show current plan
+        plan = st.session_state.plan
+
+        st.markdown(f"**Current Research Title:** {plan.research_title}")
+        st.markdown(f"**Number of Sub-Questions:** {len(plan.sub_questions)}")
+
+        st.markdown("---")
+
+        for i, sq in enumerate(plan.sub_questions, 1):
+            with st.expander(f"Question {i}: {sq.question}", expanded=False):
+                st.markdown(f"**Rationale:** {sq.rationale}")
+                st.markdown(f"**Expected Output:** {sq.expected_output}")
+
+        st.markdown("---")
 
         feedback = st.text_area(
             "What would you like to change about the plan?",
@@ -361,18 +468,63 @@ def main():
 
             # Download button
             with open(final_excel_path, 'rb') as f:
+                file_bytes = f.read()
                 st.download_button(
                     label="📥 Download Excel Report",
-                    data=f,
+                    data=file_bytes,
                     file_name=Path(final_excel_path).name,
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     type="primary"
                 )
 
+                # Save to research logs
+                try:
+                    # Use Streamlit secrets for AWS credentials if available
+                    if hasattr(st, 'secrets') and 'aws' in st.secrets:
+                        lambda_client = boto3.client(
+                            'lambda',
+                            region_name=st.secrets.aws.get('region_name', 'ap-northeast-2'),
+                            aws_access_key_id=st.secrets.aws.get('aws_access_key_id'),
+                            aws_secret_access_key=st.secrets.aws.get('aws_secret_access_key')
+                        )
+                    else:
+                        # Use default AWS credentials
+                        lambda_client = boto3.client('lambda', region_name='ap-northeast-2')
+
+                    # Encode file as base64
+                    file_base64 = base64.b64encode(file_bytes).decode('utf-8')
+
+                    # Save to research logs
+                    save_response = lambda_client.invoke(
+                        FunctionName='myra-auth',
+                        InvocationType='RequestResponse',
+                        Payload=json.dumps({
+                            'action': 'save_research_log',
+                            'user_id': st.session_state.get('user_id', ''),
+                            'research_title': state['research_plan'].research_title,
+                            'research_question': st.session_state.question,
+                            'file_data': file_base64,
+                            'file_name': Path(final_excel_path).name
+                        })
+                    )
+
+                    save_result = json.loads(save_response['Payload'].read())
+                    if save_result['statusCode'] == 200:
+                        st.success("✅ Research saved to your history!")
+                    else:
+                        st.warning("Could not save to research history")
+                except Exception as e:
+                    st.warning(f"Could not save to research history: {str(e)}")
+
             if st.button("🔄 Start New Research"):
-                # Reset everything
+                # Reset research-specific state, keep auth and welcome flag
+                keys_to_keep = ['authenticated', 'user_id', 'user_email', 'user_name', 'user_organization',
+                                'organization_name', 'daily_limit', 'anthropic_api_key', 'serper_api_key', 'show_welcome']
                 for key in list(st.session_state.keys()):
-                    del st.session_state[key]
+                    if key not in keys_to_keep:
+                        del st.session_state[key]
+                # Explicitly reset to input stage
+                st.session_state.stage = 'input'
                 st.rerun()
 
         except Exception as e:

@@ -19,7 +19,7 @@ if is_local:
     )
     print("Creating tables in LOCAL DynamoDB...")
 else:
-    dynamodb = boto3.resource('dynamodb', region_name='us-east-1')
+    dynamodb = boto3.resource('dynamodb', region_name='ap-northeast-2')
     print("Creating tables in AWS DynamoDB...")
 
 
@@ -155,6 +155,52 @@ def create_organizations_table():
         return dynamodb.Table(table_name)
 
 
+def create_research_logs_table():
+    """Create research logs metadata table."""
+    table_name = 'myra-research-logs-dev' if is_local else 'myra-research-logs-prod'
+
+    try:
+        table = dynamodb.create_table(
+            TableName=table_name,
+            KeySchema=[
+                {'AttributeName': 'user_id', 'KeyType': 'HASH'},  # Partition key
+                {'AttributeName': 'log_id', 'KeyType': 'RANGE'}   # Sort key
+            ],
+            AttributeDefinitions=[
+                {'AttributeName': 'user_id', 'AttributeType': 'S'},
+                {'AttributeName': 'log_id', 'AttributeType': 'S'},
+                {'AttributeName': 'created_at', 'AttributeType': 'S'}
+            ],
+            GlobalSecondaryIndexes=[
+                {
+                    'IndexName': 'created_at-index',
+                    'KeySchema': [
+                        {'AttributeName': 'user_id', 'KeyType': 'HASH'},
+                        {'AttributeName': 'created_at', 'KeyType': 'RANGE'}
+                    ],
+                    'Projection': {'ProjectionType': 'ALL'},
+                    'ProvisionedThroughput': {
+                        'ReadCapacityUnits': 5,
+                        'WriteCapacityUnits': 5
+                    }
+                }
+            ],
+            ProvisionedThroughput={
+                'ReadCapacityUnits': 5,
+                'WriteCapacityUnits': 5
+            }
+        )
+
+        if not is_local:
+            table.wait_until_exists()
+
+        print(f"[OK] Created table: {table_name}")
+        return table
+    except dynamodb.meta.client.exceptions.ResourceInUseException:
+        print(f"[WARN] Table {table_name} already exists")
+        return dynamodb.Table(table_name)
+
+
 if __name__ == '__main__':
     print("\nCreating DynamoDB tables...\n")
 
@@ -162,6 +208,7 @@ if __name__ == '__main__':
     usage_table = create_usage_table()
     verification_table = create_verification_table()
     organizations_table = create_organizations_table()
+    research_logs_table = create_research_logs_table()
 
     print("\nDone! Tables created successfully.\n")
 

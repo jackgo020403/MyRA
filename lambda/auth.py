@@ -42,12 +42,18 @@ USERS_TABLE = os.environ.get('DYNAMODB_TABLE_USERS', 'myra-users')
 USAGE_TABLE = os.environ.get('DYNAMODB_TABLE_USAGE', 'myra-usage')
 ORGS_TABLE = os.environ.get('DYNAMODB_TABLE_ORGS', 'myra-organizations')
 VERIFICATION_TABLE = os.environ.get('DYNAMODB_TABLE_VERIFICATION', 'myra-verification')
+RESEARCH_LOGS_TABLE = os.environ.get('DYNAMODB_TABLE_RESEARCH_LOGS', 'myra-research-logs')
 JWT_SECRET = os.environ.get('JWT_SECRET', 'your-secret-key-change-in-production')
+S3_BUCKET = os.environ.get('S3_RESEARCH_LOGS_BUCKET', 'myra-research-logs')
 
 users_table = dynamodb.Table(USERS_TABLE)
 usage_table = dynamodb.Table(USAGE_TABLE)
 orgs_table = dynamodb.Table(ORGS_TABLE)
 verification_table = dynamodb.Table(VERIFICATION_TABLE)
+research_logs_table = dynamodb.Table(RESEARCH_LOGS_TABLE)
+
+# S3 client for storing research files
+s3_client = boto3.client('s3', region_name='ap-northeast-2')
 
 
 def hash_password(password: str) -> str:
@@ -77,35 +83,70 @@ def generate_verification_code() -> str:
 
 
 def send_verification_email(email: str, code: str, organization: str) -> bool:
-    """
-    Send verification email with code.
-    TODO: Integrate with AWS SES or SendGrid
-    For now, just prints to logs (for local testing)
-    """
+    """Send verification email with code using AWS SES."""
     org_name = ORGANIZATIONS[organization]["name"]
 
-    print(f"""
-    =====================================
-    📧 VERIFICATION EMAIL
-    =====================================
-    To: {email}
-    Subject: Verify your MyRA account - {org_name}
+    # Get sender email from environment or use default
+    sender_email = os.environ.get('SES_SENDER_EMAIL', 'noreply@myra-research.com')
 
-    Welcome to MyRA Research Assistant!
+    try:
+        # Use SES in us-east-1 (SES is only available in certain regions)
+        ses = boto3.client('ses', region_name='us-east-1')
 
-    Your verification code is: {code}
+        subject = f"Verify your MyRA account - {org_name}"
 
-    This code will expire in 10 minutes.
+        body_text = f"""
+Welcome to MyRA Research Assistant!
 
-    Organization: {org_name}
-    =====================================
-    """)
+Your verification code is: {code}
 
-    # In production, use AWS SES:
-    # ses = boto3.client('ses', region_name='us-east-1')
-    # ses.send_email(...)
+This code will expire in 10 minutes.
 
-    return True
+Organization: {org_name}
+
+If you didn't request this verification, please ignore this email.
+
+---
+MyRA Research Assistant
+"""
+
+        body_html = f"""
+<html>
+<head></head>
+<body>
+  <h2>Welcome to MyRA Research Assistant!</h2>
+  <p>Your verification code is:</p>
+  <h1 style="color: #1976D2; font-size: 32px; letter-spacing: 5px;">{code}</h1>
+  <p>This code will expire in 10 minutes.</p>
+  <p><strong>Organization:</strong> {org_name}</p>
+  <hr>
+  <p style="color: #666; font-size: 12px;">
+    If you didn't request this verification, please ignore this email.
+  </p>
+</body>
+</html>
+"""
+
+        response = ses.send_email(
+            Source=sender_email,
+            Destination={'ToAddresses': [email]},
+            Message={
+                'Subject': {'Data': subject, 'Charset': 'UTF-8'},
+                'Body': {
+                    'Text': {'Data': body_text, 'Charset': 'UTF-8'},
+                    'Html': {'Data': body_html, 'Charset': 'UTF-8'}
+                }
+            }
+        )
+
+        print(f"✓ Verification email sent to {email} (MessageId: {response['MessageId']})")
+        return True
+
+    except Exception as e:
+        # Log error but don't fail the signup - print code to logs as fallback
+        print(f"✗ Failed to send email to {email}: {str(e)}")
+        print(f"FALLBACK - Verification code for {email}: {code}")
+        return False
 
 
 def signup(email: str, password: str, organization: str, name: str = "") -> Dict[str, Any]:
@@ -502,11 +543,260 @@ def resend_verification(email: str) -> Dict[str, Any]:
         }
 
 
+def save_research_log(user_id: str, research_title: str, research_question: str, file_data: bytes, file_name: str) -> Dict[str, Any]:
+    """
+    Save research log to DynamoDB and S3.
+
+    Args:
+        user_id: User's ID
+        research_title: Title of the research
+        research_question: Original research question
+        file_data: Excel file bytes
+        file_name: Original filename
+
+    Returns:
+        Response with log_id and metadata
+    """
+    try:
+        import base64
+
+        # Generate unique log ID
+        log_id = f"log_{int(datetime.utcnow().timestamp() * 1000)}"
+        created_at = datetime.utcnow().isoformat()
+
+        # S3 key pattern: {user_id}/{log_id}/{filename}
+        s3_key = f"{user_id}/{log_id}/{file_name}"
+
+        # Decode base64 file data if needed
+        if isinstance(file_data, str):
+            file_bytes = base64.b64decode(file_data)
+        else:
+            file_bytes = file_data
+
+        # Upload to S3
+        s3_client.put_object(
+            Bucket=S3_BUCKET,
+            Key=s3_key,
+            Body=file_bytes,
+            ContentType='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            Metadata={
+                'user_id': user_id,
+                'log_id': log_id,
+                'research_title': research_title,
+                'created_at': created_at
+            }
+        )
+
+        # Save metadata to DynamoDB
+        research_logs_table.put_item(Item={
+            'user_id': user_id,
+            'log_id': log_id,
+            'research_title': research_title,
+            'research_question': research_question,
+            'file_name': file_name,
+            's3_key': s3_key,
+            's3_bucket': S3_BUCKET,
+            'created_at': created_at,
+            'file_size': len(file_bytes)
+        })
+
+        print(f"✓ Saved research log: {log_id} for user {user_id}")
+
+        return {
+            'statusCode': 200,
+            'body': json.dumps({
+                'message': 'Research log saved successfully',
+                'log_id': log_id,
+                'user_id': user_id,
+                'research_title': research_title,
+                'created_at': created_at,
+                's3_key': s3_key
+            })
+        }
+    except Exception as e:
+        print(f"Save research log error: {str(e)}")
+        return {
+            'statusCode': 500,
+            'body': json.dumps({'error': str(e)})
+        }
+
+
+def get_research_logs(user_id: str, limit: int = 50) -> Dict[str, Any]:
+    """
+    Get user's research logs sorted by date (newest first).
+
+    Args:
+        user_id: User's ID
+        limit: Maximum number of logs to return
+
+    Returns:
+        Response with list of research logs
+    """
+    try:
+        # Query using GSI to get logs sorted by created_at
+        response = research_logs_table.query(
+            IndexName='created_at-index',
+            KeyConditionExpression='user_id = :uid',
+            ExpressionAttributeValues={':uid': user_id},
+            ScanIndexForward=False,  # Descending order (newest first)
+            Limit=limit
+        )
+
+        logs = response.get('Items', [])
+
+        # Convert Decimal to number for JSON serialization
+        logs = decimal_to_number(logs)
+
+        print(f"✓ Retrieved {len(logs)} research logs for user {user_id}")
+
+        return {
+            'statusCode': 200,
+            'body': json.dumps({
+                'logs': logs,
+                'count': len(logs)
+            })
+        }
+    except Exception as e:
+        print(f"Get research logs error: {str(e)}")
+        return {
+            'statusCode': 500,
+            'body': json.dumps({'error': str(e)})
+        }
+
+
+def get_research_log_file(user_id: str, log_id: str) -> Dict[str, Any]:
+    """
+    Get presigned URL to download research log file from S3.
+
+    Args:
+        user_id: User's ID
+        log_id: Log ID
+
+    Returns:
+        Response with presigned download URL
+    """
+    try:
+        # Get metadata from DynamoDB
+        response = research_logs_table.get_item(
+            Key={
+                'user_id': user_id,
+                'log_id': log_id
+            }
+        )
+
+        if 'Item' not in response:
+            return {
+                'statusCode': 404,
+                'body': json.dumps({'error': 'Research log not found'})
+            }
+
+        log_item = response['Item']
+        s3_key = log_item['s3_key']
+        file_name = log_item['file_name']
+
+        # Generate presigned URL (valid for 1 hour)
+        presigned_url = s3_client.generate_presigned_url(
+            'get_object',
+            Params={
+                'Bucket': S3_BUCKET,
+                'Key': s3_key,
+                'ResponseContentDisposition': f'attachment; filename="{file_name}"'
+            },
+            ExpiresIn=3600  # 1 hour
+        )
+
+        print(f"✓ Generated presigned URL for log {log_id}")
+
+        return {
+            'statusCode': 200,
+            'body': json.dumps({
+                'download_url': presigned_url,
+                'file_name': file_name,
+                'log_id': log_id
+            })
+        }
+    except Exception as e:
+        print(f"Get research log file error: {str(e)}")
+        return {
+            'statusCode': 500,
+            'body': json.dumps({'error': str(e)})
+        }
+
+
+def delete_research_log(user_id: str, log_id: str) -> Dict[str, Any]:
+    """
+    Delete research log from both DynamoDB and S3.
+
+    Args:
+        user_id: User's ID
+        log_id: Log ID
+
+    Returns:
+        Response confirming deletion
+    """
+    try:
+        # Get metadata from DynamoDB
+        response = research_logs_table.get_item(
+            Key={
+                'user_id': user_id,
+                'log_id': log_id
+            }
+        )
+
+        if 'Item' not in response:
+            return {
+                'statusCode': 404,
+                'body': json.dumps({'error': 'Research log not found'})
+            }
+
+        log_item = response['Item']
+        s3_key = log_item['s3_key']
+
+        # Delete from S3
+        s3_client.delete_object(
+            Bucket=S3_BUCKET,
+            Key=s3_key
+        )
+
+        # Delete from DynamoDB
+        research_logs_table.delete_item(
+            Key={
+                'user_id': user_id,
+                'log_id': log_id
+            }
+        )
+
+        print(f"✓ Deleted research log {log_id} for user {user_id}")
+
+        return {
+            'statusCode': 200,
+            'body': json.dumps({
+                'message': 'Research log deleted successfully',
+                'log_id': log_id
+            })
+        }
+    except Exception as e:
+        print(f"Delete research log error: {str(e)}")
+        return {
+            'statusCode': 500,
+            'body': json.dumps({'error': str(e)})
+        }
+
+
 def handler(event, context):
     """Main Lambda handler."""
     try:
-        # Parse request
-        body = json.loads(event.get('body', '{}'))
+        # Parse request - handle both API Gateway and Function URL formats
+        if isinstance(event.get('body'), str):
+            # API Gateway format: body is a JSON string
+            body = json.loads(event['body'])
+        elif 'action' in event:
+            # Function URL format: event is the direct payload
+            body = event
+        else:
+            # Fallback
+            body = event.get('body', {})
+
         action = body.get('action')
 
         if action == 'signup':
@@ -546,6 +836,33 @@ def handler(event, context):
                 'statusCode': 200,
                 'body': json.dumps({'organizations': orgs_info})
             }
+
+        elif action == 'save_research_log':
+            return save_research_log(
+                body['user_id'],
+                body['research_title'],
+                body['research_question'],
+                body['file_data'],
+                body['file_name']
+            )
+
+        elif action == 'get_research_logs':
+            return get_research_logs(
+                body['user_id'],
+                body.get('limit', 50)
+            )
+
+        elif action == 'get_research_log_file':
+            return get_research_log_file(
+                body['user_id'],
+                body['log_id']
+            )
+
+        elif action == 'delete_research_log':
+            return delete_research_log(
+                body['user_id'],
+                body['log_id']
+            )
 
         else:
             return {

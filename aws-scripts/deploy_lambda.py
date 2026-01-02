@@ -14,7 +14,7 @@ import subprocess
 import os
 
 # Configuration
-AWS_REGION = 'us-east-1'
+AWS_REGION = 'ap-northeast-2'
 ECR_REPO_NAME = 'myra-lambda'
 LAMBDA_FUNCTION_NAME = 'myra-auth'
 AWS_ACCOUNT_ID = boto3.client('sts').get_caller_identity()['Account']
@@ -24,14 +24,14 @@ ECR_REPO_URI = f"{AWS_ACCOUNT_ID}.dkr.ecr.{AWS_REGION}.amazonaws.com/{ECR_REPO_N
 
 def run_command(cmd, description):
     """Run shell command and handle errors."""
-    print(f"\n🔄 {description}...")
+    print(f"\n[RUNNING] {description}...")
     result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
 
     if result.returncode != 0:
-        print(f"❌ Error: {result.stderr}")
+        print(f"[ERROR] {result.stderr}")
         return False
 
-    print(f"✅ {description} completed")
+    print(f"[OK] {description} completed")
     return True
 
 
@@ -44,9 +44,9 @@ def create_ecr_repo():
             repositoryName=ECR_REPO_NAME,
             imageScanningConfiguration={'scanOnPush': True}
         )
-        print(f"✅ Created ECR repository: {ECR_REPO_NAME}")
+        print(f"[OK] Created ECR repository: {ECR_REPO_NAME}")
     except ecr.exceptions.RepositoryAlreadyExistsException:
-        print(f"⚠️  ECR repository {ECR_REPO_NAME} already exists")
+        print(f"[WARN] ECR repository {ECR_REPO_NAME} already exists")
 
 
 def build_and_push():
@@ -56,19 +56,10 @@ def build_and_push():
     if not run_command(login_cmd, "Login to ECR"):
         return False
 
-    # Build image
-    build_cmd = f"docker build -t {ECR_REPO_NAME} ."
-    if not run_command(build_cmd, "Build Docker image"):
-        return False
-
-    # Tag image
-    tag_cmd = f"docker tag {ECR_REPO_NAME}:latest {ECR_REPO_URI}:latest"
-    if not run_command(tag_cmd, "Tag Docker image"):
-        return False
-
-    # Push to ECR
-    push_cmd = f"docker push {ECR_REPO_URI}:latest"
-    if not run_command(push_cmd, "Push to ECR"):
+    # Build and push image with correct platform for Lambda
+    # Using buildx to avoid manifest issues with Lambda
+    build_push_cmd = f"docker buildx build --platform linux/amd64 --provenance=false --sbom=false -t {ECR_REPO_URI}:latest --push ."
+    if not run_command(build_push_cmd, "Build and push Docker image"):
         return False
 
     return True
@@ -97,32 +88,32 @@ def create_or_update_lambda():
     try:
         # Try to create new function
         lambda_client.create_function(**function_config)
-        print(f"✅ Created Lambda function: {LAMBDA_FUNCTION_NAME}")
+        print(f"[OK] Created Lambda function: {LAMBDA_FUNCTION_NAME}")
     except lambda_client.exceptions.ResourceConflictException:
         # Function exists, update it
         lambda_client.update_function_code(
             FunctionName=LAMBDA_FUNCTION_NAME,
             ImageUri=f"{ECR_REPO_URI}:latest"
         )
-        print(f"✅ Updated Lambda function: {LAMBDA_FUNCTION_NAME}")
+        print(f"[OK] Updated Lambda function: {LAMBDA_FUNCTION_NAME}")
 
 
 if __name__ == '__main__':
-    print("🚀 Deploying Lambda function to AWS...\n")
+    print("Deploying Lambda function to AWS...\n")
 
     print("Step 1: Create ECR repository")
     create_ecr_repo()
 
     print("\nStep 2: Build and push Docker image")
     if not build_and_push():
-        print("\n❌ Deployment failed!")
+        print("\n[ERROR] Deployment failed!")
         exit(1)
 
     print("\nStep 3: Create/update Lambda function")
     create_or_update_lambda()
 
-    print("\n✨ Deployment complete!\n")
-    print(f"📋 Lambda function: {LAMBDA_FUNCTION_NAME}")
-    print(f"🐳 ECR image: {ECR_REPO_URI}:latest")
-    print(f"🌍 Region: {AWS_REGION}")
+    print("\nDeployment complete!\n")
+    print(f"Lambda function: {LAMBDA_FUNCTION_NAME}")
+    print(f"ECR image: {ECR_REPO_URI}:latest")
+    print(f"Region: {AWS_REGION}")
     print()
